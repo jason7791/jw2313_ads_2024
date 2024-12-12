@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.spatial.distance import pdist, squareform
 from fuzzywuzzy import fuzz, process
+import geopandas as gpd
 
 """These are the types of import we might expect in this file
 import pandas
@@ -18,6 +19,110 @@ import sklearn.decomposition as decomposition
 import sklearn.feature_extraction"""
 
 """Place commands in this file to assess the data you have downloaded. How are missing values encoded, how are outliers encoded? What do columns represent, makes rure they are correctly labeled. How is the data indexed. Crete visualisation routines to assess the data (e.g. in bokeh). Ensure that date formats are correct and correctly timezoned."""
+
+
+def read_table(conn, table_name, columns="*", conditions=None, limit=None):
+    """
+    Read data from a table in the database.
+
+    Args:
+        conn: The database connection object.
+        table_name (str): Name of the table to read data from.
+        columns (str): Columns to select (default is "*").
+        conditions (str): WHERE clause conditions (optional).
+        limit (int): Limit the number of rows returned (optional).
+
+    Returns:
+        pd.DataFrame: A DataFrame containing the queried data.
+    """
+
+    cur = conn.cursor()
+
+    # Build the query
+    query = f"SELECT {columns} FROM `{table_name}`"
+    if conditions:
+        query += f" WHERE {conditions}"
+    if limit:
+        query += f" LIMIT {limit}"
+
+    print(query)
+    # Execute the query
+    cur.execute(query)
+
+    # Fetch data and convert to DataFrame
+    rows = cur.fetchall()
+    col_names = [desc[0] for desc in cur.description]  # Column names from cursor description
+    df = pd.DataFrame(rows, columns=col_names)
+
+    return df
+
+def get_geometry_df(df, output_areas_geometry_df):
+    df = pd.merge(df, output_areas_geometry_df, left_on='geography_code', right_on='OA21CD', how='inner')
+    return  gpd.GeoDataFrame(df, geometry=df['geometry'])
+
+def check_null_values(df):
+    """
+    Check for null values in a DataFrame and return detailed information.
+
+    Parameters:
+        df (pd.DataFrame or gpd.GeoDataFrame): The DataFrame to check for null values.
+
+    Returns:
+        pd.DataFrame: Summary of columns with null counts and percentages.
+    """
+    null_summary = df.isnull().sum()
+    total_rows = len(df)
+
+    null_details = null_summary[null_summary > 0]
+
+    if not null_details.empty:
+        null_df = pd.DataFrame({
+            'Column': null_details.index,
+            'Null Count': null_details.values,
+            'Null Percentage': (null_details.values / total_rows) * 100
+        }).sort_values(by='Null Percentage', ascending=False)
+
+        print("Columns with Null Values:")
+        print(null_df)
+        return null_df
+    else:
+        print("No null values found in the DataFrame.")
+        return pd.DataFrame()
+    
+def plot_frequency_distribution(data, column, bins=100, color="blue"):
+    """
+    Plot the frequency distribution of a given column.
+
+    Parameters:
+        data (pd.DataFrame or gpd.GeoDataFrame): The DataFrame containing the data.
+        column (str): The column to plot.
+        bins (int, optional): Number of bins for the histogram. Default is 30.
+        color (str, optional): Color of the histogram. Default is "blue".
+    """
+    plt.figure(figsize=(10, 6))
+    sns.histplot(data[column], bins=bins, kde=True, color=color, alpha=0.7)
+    plt.title(f"Frequency Distribution of '{column}'", fontsize=16)
+    plt.xlabel(column, fontsize=14)
+    plt.ylabel("Frequency", fontsize=14)
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.show()
+
+def plot_map(df, col):
+    fig, ax = plt.subplots(1, 1, figsize=(15, 10))
+
+    df.plot(
+        column=col,          # Column to plot
+        cmap='coolwarm',              # Colormap
+        legend=True,                  # Add a legend
+        legend_kwds={'label': f"{col}", 'shrink': 0.8},
+        ax=ax                         # Axes to plot on
+    )
+
+    # Add a title and remove axes for better visualization
+    ax.set_title(f'{col} Distribution Across the UK', fontsize=16)
+    ax.axis('off')  # Turn off axis
+
+    plt.show()
 
 
 def data():

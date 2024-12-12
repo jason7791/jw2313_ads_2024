@@ -5,8 +5,11 @@ import csv
 import time
 import zipfile
 import io
+import os
 import pandas as pd
 from sqlalchemy import create_engine
+import osmium 
+import geopandas as gpd
 
 """These are the types of import we might expect in this file
 import httplib2
@@ -18,6 +21,196 @@ import sqlite"""
 # This file accesses the data
 
 """Place commands in this file to access the data electronically. Don't remove any missing values, or deal with outliers. Make sure you have legalities correct, both intellectual property and personal data privacy rights. Beyond the legal side also think about the ethical issues around this data. """
+
+def process_osm_file(url, file_path):
+    """
+    Download and process an OSM file to extract node data.
+
+    Parameters:
+    - url (str): URL of the OSM PBF file to download.
+    - file_path (str): Path to save the downloaded file.
+
+    Returns:
+    - pd.DataFrame: DataFrame containing node data (id, latitude, longitude, tags).
+    """
+    print("Downloading the file...")
+    response = requests.get(url)
+    response.raise_for_status()
+    with open(file_path, "wb") as f:
+        f.write(response.content)
+    print(f"File downloaded and saved as: {file_path}")
+
+    class OSMHandler(osmium.SimpleHandler):
+        def __init__(self):
+            super().__init__()
+            self.data = []
+
+        def node(self, n):
+            tags = dict(n.tags)
+            if len(tags) > 1:  # Include nodes with more than 1 tag
+                self.data.append([n.id, n.location.lat, n.location.lon, dict(n.tags)])
+
+    print("Processing the file...")
+    handler = OSMHandler()
+    handler.apply_file(file_path)
+
+    map_df = pd.DataFrame(handler.data, columns=["id", "latitude", "longitude", "tags"])
+    print("Processing complete!")
+
+    return map_df
+
+def process_tags_in_chunks(df, chunk_size=100000):
+    """
+    Transform the tags column in a DataFrame into key-value pairs.
+
+    Args:
+        df (pd.DataFrame): The input DataFrame with a 'tags' column containing dictionaries.
+        chunk_size (int): Number of rows to process per chunk.
+
+    Returns:
+        pd.DataFrame: A transformed DataFrame with keys and values in separwate rows.
+    """
+    results = []
+    for start in range(0, len(df), chunk_size):
+        chunk = df.iloc[start:start + chunk_size]
+        expanded_rows = []
+        for _, row in chunk.iterrows():
+            tags = row['tags']
+            if isinstance(tags, dict):
+                for key, value in tags.items():
+                    expanded_rows.append({
+                        'id': row['id'],
+                        'latitude': row['latitude'],
+                        'longitude': row['longitude'],
+                        'key': key,
+                        'value': value
+                    })
+        results.append(pd.DataFrame(expanded_rows))
+        print("current rows", len(results))
+    return pd.concat(results, ignore_index=True)
+
+def download_and_process_shapefile(url, extract_to="shapefile_data"):
+    """
+    Download a shapefile from a URL, extract it, and load it into a GeoDataFrame.
+
+    Args:
+        url (str): URL of the shapefile to download.
+        extract_to (str): Directory where the shapefile contents will be extracted.
+
+    Returns:
+        GeoDataFrame: A GeoDataFrame containing the shapefile data.
+
+    Raises:
+        Exception: If the download fails or if the file cannot be processed.
+    """
+    try:
+        print("Downloading the shapefile...")
+        response = requests.get(url)
+        response.raise_for_status()  # Raise an error for failed requests
+        print("Download successful!")
+
+        print("Extracting the shapefile...")
+        with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+            z.extractall(extract_to)
+        print(f"Files extracted to: {extract_to}")
+
+        print("Loading the shapefile into a GeoDataFrame...")
+        shapefile_gdf = gpd.read_file(extract_to)
+        print("Shapefile loaded successfully!")
+
+        return shapefile_gdf
+
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to download file: {e}")
+        raise
+    except zipfile.BadZipFile as e:
+        print(f"Failed to unzip file: {e}")
+        raise
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        raise
+
+def download_census_data(code, base_dir=''):
+  url = f'https://www.nomisweb.co.uk/output/census/2021/census2021-{code.lower()}.zip'
+  extract_dir = os.path.join(base_dir, os.path.splitext(os.path.basename(url))[0])
+
+  if os.path.exists(extract_dir) and os.listdir(extract_dir):
+    print(f"Files already exist at: {extract_dir}.")
+    return
+
+  os.makedirs(extract_dir, exist_ok=True)
+  response = requests.get(url)
+  response.raise_for_status()
+
+  with zipfile.ZipFile(io.BytesIO(response.content)) as zip_ref:
+    zip_ref.extractall(extract_dir)
+
+  print(f"Files extracted to: {extract_dir}")
+
+
+def load_census_data(code, year=2021, level='msoa'):
+  return pd.read_csv(f'census{year}-{code.lower()}/census{year}-{code.lower()}-{level}.csv')
+
+def create_table(conn, table_name, column_definitions):
+    """
+    Create a table in the database.
+
+    Args:
+        conn: The database connection object.
+        table_name (str): Name of the table to create.
+        column_definitions (str): Column definitions in SQL format.
+    """
+    cur = conn.cursor()
+
+    # Drop table if it already exists
+    cur.execute(f"DROP TABLE IF EXISTS `{table_name}`;")
+
+    # Ensure proper use of AUTO_INCREMENT with a primary key column
+    cur.execute(f"""
+    CREATE TABLE IF NOT EXISTS `{table_name}` (
+        {column_definitions}
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """)
+    conn.commit()
+    print(f"Table `{table_name}` created successfully.")
+
+def upload_dataframe_to_sql(df, table_name, username, password, url, port, database):
+    # Using SQLAlchemy's engine to facilitate upload
+    engine = create_engine(f'mysql+pymysql://{username}:{password}@{url}:{port}/{database}')
+
+    # Upload the DataFrame to the specified table
+    df.to_sql(table_name, engine, if_exists='append', index=False)
+    print(f"Data uploaded to {table_name}.")
+
+def upload_dataframe_in_chunks(df, table_name, username, password, host, port, database, chunk_size=200000):
+    """
+    Upload the DataFrame to a MySQL table in chunks of a given size.
+
+    Args:
+        df (pd.DataFrame): The DataFrame to upload.
+        table_name (str): The name of the table to upload data into.
+        username (str): Database username.
+        password (str): Database password.
+        host (str): Database host.
+        port (int): Database port.
+        database (str): Database name.
+        chunk_size (int): The number of rows to upload in each chunk (default is 200,000).
+    """
+    # Create a connection to the MySQL database using SQLAlchemy
+    engine = create_engine(f'mysql+pymysql://{username}:{password}@{host}:{port}/{database}')
+
+    # Rename columns if needed (e.g., latitude to lat, longitude to long)
+    # df.rename(columns={"latitude": "lat", "longitude": "long"}, inplace=True)
+
+    # Break the DataFrame into smaller chunks and upload each one
+    for start in range(0, len(df), chunk_size):
+        chunk = df.iloc[start:start + chunk_size]
+
+        # Upload the chunk
+        chunk.to_sql(table_name, engine, if_exists='append', index=False)
+        print(f"Uploaded rows {start} to {start + len(chunk)} to {table_name}.")
+
+
 
 def data():
     """Read the data from the web or local file, returning structured format such as a data frame"""
