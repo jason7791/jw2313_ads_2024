@@ -9,6 +9,10 @@ import seaborn as sns
 from scipy.spatial.distance import pdist, squareform
 from fuzzywuzzy import fuzz, process
 import geopandas as gpd
+from sklearn.decomposition import PCA
+from sklearn.impute import SimpleImputer
+
+
 
 """These are the types of import we might expect in this file
 import pandas
@@ -124,6 +128,304 @@ def plot_map(df, col):
 
     plt.show()
 
+def analyze_osm_features_high_low_proportion(general_gdf, osm_pbf_gdf, metric_col, high_quantile=0.8, low_quantile=0.2):
+    """
+    Analyze OSM features in areas with high and low percentages of a given metric.
+
+    Parameters:
+        ns_sec_gdf (GeoDataFrame): GeoDataFrame containing geographic data and the metric to analyze.
+        osm_pbf_df (GeoDataFrame): GeoDataFrame containing OSM data with geographic coordinates.
+        metric_col (str): Column name of the metric to analyze (e.g., 'ns_sec_l15').
+        high_quantile (float): Quantile threshold for high values (default is 0.8).
+        low_quantile (float): Quantile threshold for low values (default is 0.2).
+
+    Returns:
+        high_features_summary (DataFrame): Summary of common OSM features in high metric areas.
+        low_features_summary (DataFrame): Summary of common OSM features in low metric areas.
+    """
+    if osm_pbf_gdf.crs != general_gdf.crs:
+            osm_pbf_gdf = osm_pbf_gdf.to_crs(general_gdf.crs)
+
+    high_threshold = general_gdf[metric_col].quantile(high_quantile)
+    low_threshold = general_gdf[metric_col].quantile(low_quantile)
+
+    high_areas = general_gdf[general_gdf[metric_col] >= high_threshold]
+    low_areas = general_gdf[general_gdf[metric_col] <= low_threshold]
+
+    high_features = gpd.sjoin(osm_pbf_gdf, high_areas, how="inner", predicate="within")
+    low_features = gpd.sjoin(osm_pbf_gdf, low_areas, how="inner", predicate="within")
+
+    high_features_summary = high_features.groupby(['key', 'value']).size().reset_index(name='count').sort_values(by='count', ascending=False)
+    low_features_summary = low_features.groupby(['key', 'value']).size().reset_index(name='count').sort_values(by='count', ascending=False)
+
+    return high_features_summary, low_features_summary
+
+def compare_feature_counts(high_summary, low_summary):
+    """
+    Compare feature counts between two groups and compute metrics to identify distinct features.
+
+    Args:
+        high_summary (pd.DataFrame): DataFrame with 'key', 'value', and 'count' columns for the high group.
+        low_summary (pd.DataFrame): DataFrame with 'key', 'value', and 'count' columns for the low group.
+
+    Returns:
+        pd.DataFrame: A DataFrame with merged counts, difference metric, and total counts, sorted by total count and difference.
+    """
+    # Merge the two tables on key-value pairs
+    merged_features = pd.merge(
+        high_summary,
+        low_summary,
+        on=['key', 'value'],
+        how='outer',
+        suffixes=('_high', '_low')
+    )
+
+    # Fill NaN counts with 0 for features that appear in only one of the groups
+    merged_features['count_high'] = merged_features['count_high'].fillna(0)
+    merged_features['count_low'] = merged_features['count_low'].fillna(0)
+
+    # Calculate a difference metric (e.g., normalized difference)
+    merged_features['difference'] = (merged_features['count_high'] - merged_features['count_low']) / (
+        merged_features['count_high'] + merged_features['count_low']
+    )
+
+    # Add total count for sorting
+    merged_features['total_count'] = merged_features['count_high'] + merged_features['count_low']
+
+    # Sort by the absolute value of the difference to find the most distinct features
+    merged_features = merged_features.sort_values(by=['difference'], key=abs, ascending=False)
+
+    return merged_features
+
+def filter_features(merged_features, total_count_threshold , difference_threshold):# Set thresholds for filtering
+    # Filter rows based on total_count and difference
+    return merged_features[
+        (merged_features['total_count'] > total_count_threshold) &  # High total_count
+        (merged_features['difference'].abs() >= difference_threshold)  # Difference close to 1 or -1
+    ].sort_values(by=['total_count'], key=abs, ascending=False)
+
+def count_exact_features_within_polygons(ns_sec_gdf, student_osm_gdf, feature_columns, crs_epsg=27700, area_threshold=1, cap_value=None):
+    """
+    Counts and normalizes the number of specific features (from student_osm_gdf) within each polygon (in ns_sec_gdf).
+    """
+    # Ensure the CRS of both GeoDataFrames match
+    ns_sec_gdf = ns_sec_gdf.copy()
+    student_osm_gdf = student_osm_gdf.copy()
+
+    ns_sec_gdf = ns_sec_gdf.to_crs(epsg=crs_epsg)
+    student_osm_gdf = student_osm_gdf.to_crs(epsg=crs_epsg)
+
+    # Create combined feature column
+    if 'key' in student_osm_gdf.columns and 'value' in student_osm_gdf.columns:
+        student_osm_gdf['feature'] = student_osm_gdf['key'] + "_" + student_osm_gdf['value']
+    else:
+        raise ValueError("student_osm_gdf must have 'key' and 'value' columns.")
+
+    # Spatial join
+    joined_gdf = gpd.sjoin(student_osm_gdf, ns_sec_gdf, how='left', predicate='within')
+
+
+    # Count features
+    if not joined_gdf.empty:
+        feature_counts = joined_gdf.groupby(['OA21CD', 'feature']).size().reset_index(name='count')
+        pivot_table = feature_counts.pivot(index='OA21CD', columns='feature', values='count').fillna(0).reset_index()
+        print("Pivot table created.")
+    else:
+        print("No features found within polygons.")
+        pivot_table = pd.DataFrame()
+
+    # Merge pivot table back to ns_sec_gdf
+    result = ns_sec_gdf.merge(pivot_table, on='OA21CD', how='left').fillna(0)
+
+    # Normalize by area
+    result['area_sqm'] = result['geometry'].area
+    for col in feature_columns:
+        if col in result.columns:
+            result[col] = (result[col] / result['area_sqm']) * 1e6
+            if cap_value:
+                result[col] = result[col].clip(upper=cap_value)
+        else:
+            print(f"Feature column '{col}' not found in result.")
+
+    return result
+
+def count_features_within_polygons(
+    census_gdf, osm_gdf, feature_columns, feature_buffer_distances, crs_epsg=27700, cap_value=None
+):
+    """
+    Counts and normalizes the number of specific features (from student_osm_gdf) within each polygon (in ns_sec_gdf),
+    with feature-specific buffering and normalization improvements.
+
+    Parameters:
+        ns_sec_gdf (GeoDataFrame): GeoDataFrame containing polygons to analyze.
+        student_osm_gdf (GeoDataFrame): GeoDataFrame containing features to buffer and count.
+        feature_columns (list): List of features to consider for counting.
+        crs_epsg (int): EPSG code for the CRS to use for both GeoDataFrames.
+        area_threshold (float): Minimum polygon area to include in the analysis.
+        cap_value (float): Optional maximum cap for normalized feature values.
+
+    Returns:
+        GeoDataFrame: Updated GeoDataFrame with feature counts normalized by area.
+    """
+
+
+    # Ensure the CRS of both GeoDataFrames match
+    census_gdf = census_gdf.copy()
+    osm_gdf = osm_gdf.copy()
+
+    census_gdf = census_gdf.to_crs(epsg=crs_epsg)
+    osm_gdf = osm_gdf.to_crs(epsg=crs_epsg)
+
+    # Create a combined feature column in student_osm_gdf
+    osm_gdf['feature'] = osm_gdf['key'] + "_" + osm_gdf['value']
+
+    # Apply feature-specific buffering
+    osm_gdf['buffer_distance'] = osm_gdf['feature'].map(feature_buffer_distances).fillna(200)
+    osm_gdf['geometry'] = osm_gdf.apply(
+        lambda row: row.geometry.buffer(row.buffer_distance), axis=1
+    )
+
+    # Perform spatial join
+    joined_gdf = gpd.sjoin(census_gdf, osm_gdf, how='left', predicate='intersects')
+
+    # Count the number of features for each OA21CD
+    feature_counts = joined_gdf.groupby(['OA21CD', 'feature']).size().reset_index(name='count')
+
+    # Pivot the table to have one column per feature
+    pivot_table = feature_counts.pivot(index='OA21CD', columns='feature', values='count').fillna(0).reset_index()
+
+    # Merge the counts back to the original ns_sec_gdf
+    result = census_gdf.merge(pivot_table, on='OA21CD', how='left').fillna(0)
+
+    # Calculate the area of each region in square meters
+    result['area_sqm'] = result['geometry'].area
+
+    # Normalize feature counts by region area (counts per square kilometer)
+    for col in feature_columns:
+        if col not in result.columns:
+            result[col] = 0
+        else:
+            result[col] = (result[col] / result['area_sqm']) * 1e6  # Normalize to counts per km²
+            if cap_value:
+                result[col] = result[col].clip(upper=cap_value)  # Cap extreme values if specified
+
+    # Drop any remaining NaN values
+    result = result.dropna()
+
+    return result
+
+
+
+def plot_correlation_matrix(dataframe, cols_to_include, title="Correlation Matrix", figsize=(12,8)):
+    """
+    Plot a correlation matrix for the selected columns in the DataFrame.
+
+    Parameters:
+        dataframe (pd.DataFrame): The DataFrame containing the data.
+        cols_to_include (list): List of column names to include in the correlation matrix.
+        title (str): Title for the correlation plot.
+    """
+    # Compute the correlation matrix
+    correlation_matrix = dataframe[cols_to_include].corr()
+
+    # Plot the correlation matrix
+    plt.figure(figsize=figsize)
+    sns.heatmap(
+        correlation_matrix,
+        annot=True,
+        fmt=".2f",
+        cmap="coolwarm",
+        cbar=True,
+        square=True
+    )
+    plt.title(title, fontsize=16)
+    plt.xticks(rotation=45, ha='right')
+    plt.yticks(rotation=0)
+    plt.tight_layout()
+    plt.show()
+
+
+def perform_pca_and_plot_cumulative_variance(data, features, n_components=None, figsize=(10, 6)):
+    """
+    Perform PCA on selected numerical features, plot explained variance, and return the PCA results.
+
+    Args:
+        data (pd.DataFrame): The DataFrame containing the data.
+        features (list): List of numerical feature columns to include in PCA.
+        n_components (int, optional): Number of principal components to retain. If None, all components are used.
+        figsize (tuple, optional): The figure size for the explained variance plot.
+
+    Returns:
+        tuple: A tuple containing:
+            - pca_df (pd.DataFrame): DataFrame with the principal components.
+            - explained_variance_ratio (list): List of explained variance ratios for each principal component.
+    """
+    # Select numerical features and handle missing values
+    imputer = SimpleImputer(strategy="mean")  # Replace missing values with the mean
+    imputed_features = imputer.fit_transform(data[features])
+
+    # Standardize the features (mean=0, variance=1)
+    scaler = StandardScaler()
+    scaled_features = scaler.fit_transform(imputed_features)
+
+    # Perform PCA
+    pca = PCA(n_components=n_components)
+    pca_result = pca.fit_transform(scaled_features)
+
+    # Create a DataFrame for PCA results
+    pca_df = pd.DataFrame(
+        pca_result,
+        columns=[f'PC{i+1}' for i in range(pca_result.shape[1])]
+    )
+
+    # Explained variance ratio
+    explained_variance_ratio = pca.explained_variance_ratio_
+
+    # Compute the cumulative explained variance
+    cumulative_variance = explained_variance_ratio.cumsum()
+    n_components_needed = (cumulative_variance >= 0.95).argmax() + 1
+
+    # Plot the explained variance ratio
+    plt.figure(figsize=figsize)
+    plt.bar(range(1, len(explained_variance_ratio) + 1), explained_variance_ratio, alpha=0.7, align='center')
+    plt.step(range(1, len(explained_variance_ratio) + 1), explained_variance_ratio.cumsum(), where='mid', label='Cumulative Explained Variance')
+    plt.xlabel('Principal Components')
+    plt.ylabel('Variance Explained')
+    plt.title('Explained Variance by Principal Components')
+    plt.legend()
+    plt.show()
+
+    # Print the explained variance ratio for each principal component
+    print("Explained Variance Ratios:")
+    for i, ratio in enumerate(explained_variance_ratio, 1):
+        print(f"PC{i}: {ratio:.4f}")
+
+    print(f"Number of components needed to explain at least 95% of variance: {n_components_needed}")
+
+    return pca_df, explained_variance_ratio
+
+def plot_high_student_proportion_map(dataframe, column, threshold=0.4):
+    """
+    Plots a map highlighting areas where the proportion of students exceeds a given threshold.
+
+    Parameters:
+        dataframe (GeoDataFrame): GeoDataFrame containing the data and geometries.
+        column (str): Column name representing the student proportion.
+        threshold (float): Threshold for highlighting areas (default is 0.4).
+    """
+    # Filter areas with high and low student proportions
+    high_proportion_areas = dataframe[dataframe[column] > threshold]
+    low_proportion_areas = dataframe[dataframe[column] <= threshold]
+
+    # Plot the map
+    fig, ax = plt.subplots(figsize=(12, 12))
+    low_proportion_areas.plot(ax=ax, color="lightblue", alpha=0.5, label=f"{column} <= {threshold}")
+    high_proportion_areas.plot(ax=ax, color="red", alpha=0.7, label=f"{column} > {threshold}")
+
+    # Add map details
+    plt.title(f"Map Highlighting Areas with High {column} Proportion (> {threshold})", fontsize=16)
+    plt.legend()
+    plt.show()
 
 def data():
     """Load the data from access and ensure missing values are correctly encoded as well as indices correct, column names informative, date and times correctly formatted. Return a structured data structure such as a data frame."""
