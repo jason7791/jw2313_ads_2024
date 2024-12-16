@@ -8,7 +8,6 @@ from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import KFold
-from sklearn.metrics import mean_squared_error, r2_score
 import pandas as pd
 from sklearn.linear_model import Ridge
 from . import assess
@@ -56,15 +55,17 @@ def train_and_test_ols(data, train_features, target_features, test_size=0.3, ran
     X_train_normalized = scaler.fit_transform(X_train)
     X_test_normalized = scaler.transform(X_test)
 
-    # Add a constant for the intercept term
-    X_train_const = sm.add_constant(X_train_normalized, has_constant="add")
-    X_test_const = sm.add_constant(X_test_normalized, has_constant="add")
+    # Add a constant for the intercept term and create DataFrames with proper column names
+    train_feature_names = ["const"] + train_features
+    X_train_const = pd.DataFrame(sm.add_constant(X_train_normalized, has_constant="add"),
+                                 columns=train_feature_names,
+                                 index=X_train.index)
+    X_test_const = pd.DataFrame(sm.add_constant(X_test_normalized, has_constant="add"),
+                                columns=train_feature_names,
+                                index=X_test.index)
 
     # Train the OLS model
     ols_model = sm.OLS(y_train, X_train_const).fit()
-
-    # Update the summary table to include feature names
-    ols_model.summary2().tables[1].index = ["const"] + train_features
 
     # Predict on training and testing sets
     y_train_pred = ols_model.predict(X_train_const)
@@ -75,13 +76,13 @@ def train_and_test_ols(data, train_features, target_features, test_size=0.3, ran
     test_r2 = r2_score(y_test, y_test_pred)
     test_rmse = np.sqrt(mean_squared_error(y_test, y_test_pred))
 
+    # Print the summary with feature names
     print(ols_model.summary())
     print(f"\nTraining R^2: {train_r2:.3f}")
     print(f"Test R^2: {test_r2:.3f}")
     print(f"Test RMSE: {test_rmse:.3f}")
 
     return ols_model, train_r2, test_r2, test_rmse
-
 
 def kfold_train_and_test_ols_with_plot(data, train_features, target_features, k=5, random_state=42):
     """
@@ -182,6 +183,7 @@ def kfold_train_and_test_ols_with_plot(data, train_features, target_features, k=
         "avg_test_r2": avg_test_r2,
         "avg_test_rmse": avg_test_rmse
     }
+
 
 
 def kfold_ridge_validation_with_plot(data, train_features, target_feature, n_splits=5, random_state=42, alpha=1.0):
