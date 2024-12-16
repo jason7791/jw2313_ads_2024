@@ -1077,3 +1077,111 @@ def count_transport_features_by_year_and_type(mode_of_transport_gdf, buffered_tr
     result_gdf.fillna(0, inplace=True)
 
     return result_gdf
+
+
+def divide_by_population_density(
+    transport_data, population_data, join_column='geography_code', density_column='population_density_2011'
+):
+    """
+    Join transport data with population data and divide into groups based on population density.
+
+    Args:
+        transport_data (pd.DataFrame): DataFrame containing transport data.
+        population_data (pd.DataFrame): DataFrame containing population density metrics.
+        join_column (str): Column name to join on (default: 'geography_code').
+        density_column (str): Column name for population density (default: 'population_density_2011').
+
+    Returns:
+        tuple: Three DataFrames corresponding to low, medium, and high population density groups.
+    """
+    # Step 1: Perform the join
+    merged_data = transport_data.merge(
+        population_data,
+        on=join_column,
+        how='inner'  # Use 'inner' to keep only matching rows
+    )
+
+    # Step 2: Calculate thresholds for population density (tertiles: low, medium, high)
+    low_threshold = merged_data[density_column].quantile(0.25)
+    high_threshold = merged_data[density_column].quantile(0.75)
+
+    # Step 3: Divide the DataFrame into three groups
+    low_density_group = merged_data[merged_data[density_column] < low_threshold]
+    medium_density_group = merged_data[
+        (merged_data[density_column] >= low_threshold) & (merged_data[density_column] < high_threshold)
+    ]
+    high_density_group = merged_data[merged_data[density_column] >= high_threshold]
+
+    return low_density_group, medium_density_group, high_density_group
+
+
+
+def calculate_price_metrics_per_local_authority(mode_of_transport_gdf, pp_gdf, price_column="price", date_column="date_of_transfer"):
+    """
+    Calculate the median property price for each county for 2011, 2021, and their percentage change.
+
+    Parameters:
+        mode_of_transport_gdf (GeoDataFrame): GeoDataFrame containing county polygons.
+        pp_gdf (GeoDataFrame): GeoDataFrame containing property price points with their geometry and date of transfer.
+        price_column (str): Column in pp_gdf containing the property prices.
+        date_column (str): Column in pp_gdf containing the date of property transfer.
+
+    Returns:
+        GeoDataFrame: Updated mode_of_transport_gdf with average_price_2011, average_price_2021, and average_price_change columns.
+    """
+    pp_gdf = pp_gdf.copy()
+    mode_of_transport_gdf = mode_of_transport_gdf.copy()
+
+    # Ensure both GeoDataFrames use the same CRS
+    pp_gdf = pp_gdf.to_crs(mode_of_transport_gdf.crs)
+
+    # Extract year from the date_of_transfer column
+    pp_gdf["year"] = pd.to_datetime(pp_gdf[date_column], errors="coerce").dt.year
+
+    # Function to calculate median prices for a specific year
+    def calculate_median_price(year):
+        filtered_pp = pp_gdf[pp_gdf["year"] == year]
+        joined = gpd.sjoin(filtered_pp, mode_of_transport_gdf, how="left", predicate="within")
+        median_prices = (
+            joined.groupby("UTLA22CD")[price_column]
+            .median()
+            .reset_index(name=f"average_price_{year}")
+        )
+        return median_prices
+
+    # Calculate median prices for 2011 and 2021
+    median_prices_2011 = calculate_median_price(2011)
+    median_prices_2021 = calculate_median_price(2021)
+
+    # Merge the results into the mode_of_transport_gdf
+    mode_of_transport_gdf = mode_of_transport_gdf.merge(median_prices_2011, on="UTLA22CD", how="left")
+    mode_of_transport_gdf = mode_of_transport_gdf.merge(median_prices_2021, on="UTLA22CD", how="left")
+
+    # Calculate the price change (percentage change from 2011 to 2021)
+    mode_of_transport_gdf["average_price_change"] = (
+        (mode_of_transport_gdf["average_price_2021"] - mode_of_transport_gdf["average_price_2011"])
+        / mode_of_transport_gdf["average_price_2011"]
+    ) * 100
+
+    return mode_of_transport_gdf
+
+
+def merge_census_data(dataframes, keys):
+    """
+    Merges a list of DataFrames on specified keys.
+
+    Parameters:
+        dataframes (list of pd.DataFrame): List of DataFrames to merge.
+        keys (list of str): List of column names to merge on.
+
+    Returns:
+        pd.DataFrame: A merged DataFrame containing all specified DataFrames.
+    """
+    if len(dataframes) != len(keys):
+        raise ValueError("The number of DataFrames and keys must be the same.")
+
+    merged_df = dataframes[0]
+    for i in range(1, len(dataframes)):
+        merged_df = pd.merge(merged_df, dataframes[i], on=keys[i], how="inner")
+
+    return merged_df
