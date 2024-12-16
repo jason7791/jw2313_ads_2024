@@ -11,7 +11,7 @@ from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error, r2_score
 import pandas as pd
 from sklearn.linear_model import Ridge
-import assess
+from . import assess
 from shapely.geometry import box, Point
 import geopandas as gpd
 
