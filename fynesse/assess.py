@@ -11,7 +11,7 @@ from fuzzywuzzy import fuzz, process
 import geopandas as gpd
 from sklearn.decomposition import PCA
 from sklearn.impute import SimpleImputer
-
+from shapely.geometry import Point
 
 
 """These are the types of import we might expect in this file
@@ -93,6 +93,29 @@ def check_null_values(df):
         print("No null values found in the DataFrame.")
         return pd.DataFrame()
     
+def replace_nulls_with_median(df, columns=None):
+    """
+    Replaces null values with the median in the specified columns of a DataFrame.
+
+    Args:
+        df (pd.DataFrame): The DataFrame with null values to replace.
+        columns (list, optional): List of columns to replace nulls. If None, apply to all columns.
+
+    Returns:
+        pd.DataFrame: The DataFrame with null values replaced by the median.
+    """
+    if columns is None:
+        columns = df.columns  # Apply to all columns if none are specified
+
+    for column in columns:
+        if column in df.columns:
+            median_value = df[column].median()  # Calculate the median
+            df[column].fillna(median_value, inplace=True)  # Replace NaN with median
+            print(f"Replaced nulls in column '{column}' with median value {median_value}.")
+        else:
+            print(f"Column '{column}' not found in the DataFrame.")
+    
+    return df
 def plot_frequency_distribution(data, column, bins=100, color="blue"):
     """
     Plot the frequency distribution of a given column.
@@ -203,6 +226,26 @@ def filter_features(merged_features, total_count_threshold , difference_threshol
         (merged_features['total_count'] > total_count_threshold) &  # High total_count
         (merged_features['difference'].abs() >= difference_threshold)  # Difference close to 1 or -1
     ].sort_values(by=['total_count'], key=abs, ascending=False)
+
+    
+def calculate_no_features_proportion(dataframe, feature_columns):
+    """
+    Calculate the proportion of rows where the sum of the specified feature columns is zero.
+
+    Args:
+        dataframe (pd.DataFrame): The input DataFrame.
+        feature_columns (list of str): The feature columns to check.
+
+    Returns:
+        float: Proportion of rows with no features.
+    """
+    # Count rows where the sum of the specified columns is zero
+    no_features_count = (dataframe[feature_columns].sum(axis=1) == 0).sum()
+    
+    # Calculate the proportion
+    no_features_proportion = no_features_count / len(dataframe)
+    
+    return no_features_proportion
 
 def count_exact_features_within_polygons(ns_sec_gdf, student_osm_gdf, feature_columns, crs_epsg=27700, area_threshold=1, cap_value=None):
     """
@@ -344,6 +387,29 @@ def plot_correlation_matrix(dataframe, cols_to_include, title="Correlation Matri
     plt.tight_layout()
     plt.show()
 
+def plot_correlation_scatter(dataframe, x_col, y_col, title="Correlation Graph", xlabel=None, ylabel=None):
+    """
+    Plot a scatterplot to visualize the correlation between two variables.
+
+    Parameters:
+        dataframe (pd.DataFrame): The DataFrame containing the data.
+        x_col (str): The column name for the x-axis.
+        y_col (str): The column name for the y-axis.
+        title (str): Title for the scatter plot.
+        xlabel (str): Label for the x-axis (optional).
+        ylabel (str): Label for the y-axis (optional).
+    """
+    plt.figure(figsize=(10, 6))
+    sns.scatterplot(data=dataframe, x=x_col, y=y_col, color="blue", alpha=0.7)
+    sns.regplot(data=dataframe, x=x_col, y=y_col, scatter=False, color="red", line_kws={"label": "Linear Fit"})
+
+    plt.title(title, fontsize=16)
+    plt.xlabel(xlabel or x_col, fontsize=14)
+    plt.ylabel(ylabel or y_col, fontsize=14)
+    plt.legend()
+    plt.grid(True, alpha=0.5)
+    plt.tight_layout()
+    plt.show()
 
 def perform_pca_and_plot_cumulative_variance(data, features, n_components=None, figsize=(10, 6)):
     """
@@ -403,6 +469,58 @@ def perform_pca_and_plot_cumulative_variance(data, features, n_components=None, 
     print(f"Number of components needed to explain at least 95% of variance: {n_components_needed}")
 
     return pca_df, explained_variance_ratio
+
+def perform_pca_with_heatmap(data, features, standardize=True, figsize=(16, 12)):
+    """
+    Perform PCA, plot the loadings as a heatmap, and return explained variance ratios.
+
+    Args:
+        data (pd.DataFrame): The DataFrame containing the data.
+        features (list): List of numerical feature column names to include in PCA.
+        standardize (bool, optional): Whether to standardize the features before PCA (default=True).
+        figsize (tuple, optional): Figure size for the heatmap (default=(16, 12)).
+
+    Returns:
+        tuple: A tuple containing:
+            - loadings (pd.DataFrame): The PCA loadings (components).
+            - explained_variance_ratio (list): Explained variance ratio for each principal component.
+    """
+    # Select numerical features
+    numerical_features = data[features]
+
+    # Standardize the features (mean=0, variance=1) if required
+    if standardize:
+        scaler = StandardScaler()
+        scaled_features = scaler.fit_transform(numerical_features)
+    else:
+        scaled_features = numerical_features.values
+
+    # Perform PCA
+    pca = PCA()
+    pca_result = pca.fit_transform(scaled_features)
+
+    # Create a DataFrame for PCA loadings
+    loadings = pd.DataFrame(
+        pca.components_,
+        columns=numerical_features.columns,
+        index=[f'PC{i+1}' for i in range(pca.n_components_)]
+    )
+
+    # Plot the PCA loadings as a heatmap
+    plt.figure(figsize=figsize)
+    sns.heatmap(loadings, cmap="coolwarm", annot=True, fmt=".2f", cbar=True)
+    plt.title("PCA Loadings (Feature Contributions to Principal Components)")
+    plt.xlabel("Original Features")
+    plt.ylabel("Principal Components")
+    plt.show()
+
+    # Print the explained variance ratio for each principal component
+    explained_variance_ratio = pca.explained_variance_ratio_
+    print("Explained Variance Ratios:")
+    for i, ratio in enumerate(explained_variance_ratio, 1):
+        print(f"PC{i}: {ratio:.4f}")
+
+    return loadings, explained_variance_ratio
 
 def plot_high_student_proportion_map(dataframe, column, threshold=0.4):
     """
@@ -560,6 +678,27 @@ def plot_distance_df(distance_df):
   plt.ylabel('Location')
   plt.show()
 
+
+def plot_distribution(df, column):
+    """
+    Plot the distribution of a specific column to visually inspect for outliers.
+
+    Args:
+        df (pd.DataFrame): The DataFrame containing the data.
+        column (str): The column to plot.
+    """
+    plt.figure(figsize=(10, 6))
+
+    # Plot distribution
+    sns.histplot(df[column], kde=True, bins=100, color="blue", alpha=0.7)
+
+    # Add title and labels
+    plt.title(f"Distribution of '{column}'", fontsize=16)
+    plt.xlabel(column, fontsize=14)
+    plt.ylabel("Frequency", fontsize=14)
+
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.show()
 
 def plot_feature_correlation_matrix(poi_counts_df):
   poi_features = poi_counts_df.drop(columns=['Location'])
@@ -724,3 +863,217 @@ def analyze_price_area_relationship(df):
     plt.ylabel("Price")
     plt.legend(title='Property Type')
     plt.show()
+
+
+
+def add_naptan_atcocode(dataframe, osm_pbf_df):
+    """
+    Adds the naptan:AtcoCode column to a DataFrame by merging it with osm_pbf_df on the id column.
+
+    Parameters:
+        dataframe (pd.DataFrame): The DataFrame (e.g., railway_stations or bus_stops) to update.
+        osm_pbf_df (pd.DataFrame): The OpenStreetMap PBF DataFrame containing 'key' and 'value' columns.
+
+    Returns:
+        pd.DataFrame: The updated DataFrame with an additional naptan:AtcoCode column.
+    """
+
+
+    # Filter rows in osm_pbf_df where the key is 'naptan:AtcoCode'
+    naptan_atco_codes = osm_pbf_df[osm_pbf_df['key'] == 'naptan:AtcoCode'][['id', 'value']].rename(columns={'value': 'naptan:AtcoCode'})
+
+    # Merge the input DataFrame with the filtered naptan_atco_codes DataFrame on the 'id' column
+    updated_dataframe = dataframe.merge(
+        naptan_atco_codes,
+        on='id',
+        how='left'
+    )
+
+    return updated_dataframe
+
+
+
+def add_creation_datetime(dataframe, naptan_df):
+    """
+    Adds the CreationDateTime column to a DataFrame by merging it with naptan_df on the ATCOCode column.
+
+    Parameters:
+        dataframe (pd.DataFrame): The DataFrame with an ATCOCode column (e.g., railway_stations or bus_stops).
+        naptan_df (pd.DataFrame): The NaPTAN DataFrame containing ATCOCode and CreationDateTime columns.
+
+    Returns:
+        pd.DataFrame: The updated DataFrame with an additional CreationDateTime column.
+    """
+    # Merge the input DataFrame with the naptan_df on the ATCOCode column
+    updated_dataframe = dataframe.merge(
+        naptan_df[['ATCOCode', 'CreationDateTime']],
+        left_on='naptan:AtcoCode',
+        right_on='ATCOCode',
+        how='left'
+    )
+
+    return updated_dataframe
+
+def filter_transport_features_by_creation_date(dataframe, start_year, end_year):
+    """
+    Filters transport features based on the CreationDateTime column to include only those
+    created within the specified date range (start_year inclusive, end_year exclusive).
+
+    Parameters:
+        dataframe (pd.DataFrame): The DataFrame with a CreationDateTime column.
+        start_year (int): The starting year (inclusive).
+        end_year (int): The ending year (exclusive).
+
+    Returns:
+        pd.DataFrame: The filtered DataFrame.
+    """
+    # Ensure CreationDateTime is in datetime format and handle invalid formats
+    dataframe['CreationDateTime'] = pd.to_datetime(dataframe['CreationDateTime'], errors='coerce')
+
+    # Filter rows based on the year range, excluding NaT (invalid dates)
+    filtered_dataframe = dataframe[
+        (dataframe['CreationDateTime'].notna()) &  # Exclude invalid dates
+        (dataframe['CreationDateTime'].dt.year >= start_year) &
+        (dataframe['CreationDateTime'].dt.year < end_year)
+    ]
+
+    return filtered_dataframe
+
+
+
+def process_transport_features_with_date_column(
+    osm_pbf_df, naptan_df, start_year=2011, end_year=2021
+):
+    """
+    Process transport features from OSM and NAPTAN data, identifying features present in 2011
+    and newly built from 2011 to 2021, and assigning a `date` column accordingly.
+
+    Args:
+        osm_pbf_df (pd.DataFrame): OSM data containing transport features.
+        naptan_url (str): URL to download the NAPTAN dataset.
+        start_year (int, optional): Starting year for filtering. Defaults to 2011.
+        end_year (int, optional): Ending year for filtering. Defaults to 2021.
+
+    Returns:
+        GeoDataFrame: A GeoDataFrame containing all transport features with an additional `date` column.
+    """
+
+    # Extract bus stops and railway stations
+    bus_stops = osm_pbf_df[(osm_pbf_df['key'] == 'highway') & (osm_pbf_df['value'] == 'bus_stop')]
+    railway_stations = osm_pbf_df[(osm_pbf_df['key'] == 'railway') & (osm_pbf_df['value'] == 'station')]
+    bus_stops['feature'] = 'bus_stop'
+    railway_stations['feature'] = 'railway_station'
+
+    # Combine transport features
+    transport_df = pd.concat([bus_stops, railway_stations], ignore_index=True)
+
+    # Add NAPTAN ATCO code
+    transport_df_with_naptan_atcocode = add_naptan_atcocode(transport_df, osm_pbf_df)
+    print(transport_df_with_naptan_atcocode[~transport_df_with_naptan_atcocode["naptan:AtcoCode"].isnull()])
+
+    # Add creation datetime from NAPTAN data
+    transport_df_with_creation_time = add_creation_datetime(transport_df_with_naptan_atcocode, naptan_df)
+  
+    # Drop unnecessary columns
+    transport_features_df = transport_df_with_creation_time.drop(columns=['key', 'value'], errors='ignore')
+
+    # Filter features present in 2011
+    present_in_2011 = filter_transport_features_by_creation_date(
+        transport_features_df, start_year=1900, end_year=start_year
+    )
+    present_in_2011['date'] = start_year  # Assign date as 2011
+
+    # Filter features present in 2021
+    newly_built = filter_transport_features_by_creation_date(
+        transport_features_df, start_year=1900, end_year=end_year
+    )
+    newly_built['date'] = end_year  # Assign date as 2021
+
+    # Combine the two datasets
+    combined_df = pd.concat([present_in_2011, newly_built], ignore_index=True)
+
+    # Add geometry column
+    combined_df['geometry'] = combined_df.apply(lambda row: Point(row['longitude'], row['latitude']), axis=1)
+
+    # Convert to GeoDataFrame
+    combined_gdf = gpd.GeoDataFrame(combined_df, geometry='geometry', crs="EPSG:4326")
+
+    return combined_gdf
+
+
+def buffer_transport_features(transport_gdf, crs_epsg="EPSG:27700", buffer_sizes=None):
+    """
+    Buffer transport features based on their type.
+
+    Parameters:
+        transport_gdf (GeoDataFrame): GeoDataFrame containing transport features with geometry.
+        crs_epsg (str): The CRS to reproject the GeoDataFrame to. Default is "EPSG:27700" (British National Grid).
+        buffer_sizes (dict): A dictionary defining buffer sizes for each feature type (in meters).
+
+    Returns:
+        GeoDataFrame: A GeoDataFrame with buffered geometries.
+    """
+    transport_gdf = transport_gdf.copy()
+    # Default buffer sizes if not provided
+    if buffer_sizes is None:
+        buffer_sizes = {
+            'bus_stop': 400,  # Buffer size in meters for bus stops
+            'railway_station': 5000  # Buffer size in meters for railway stations
+        }
+
+    # Reproject to the specified CRS
+    transport_gdf = transport_gdf.to_crs(crs_epsg)
+
+    # Define a buffer function
+    def buffer_by_feature(row):
+        return row['geometry'].buffer(buffer_sizes.get(row['feature'], 0))  # Default to no buffer if feature not found
+
+    # Apply the buffer function
+    transport_gdf['geometry'] = transport_gdf.apply(buffer_by_feature, axis=1)
+
+    return transport_gdf
+
+def count_transport_features_by_year_and_type(mode_of_transport_gdf, buffered_transport_gdf, feature_types, year_column="date", utla_column="UTLA22CD"):
+    """
+    Count the number of transport features (e.g., bus stops, railway stations) by year for each UTLA region.
+
+    Parameters:
+        mode_of_transport_gdf (GeoDataFrame): GeoDataFrame containing UTLA polygons.
+        buffered_transport_gdf (GeoDataFrame): GeoDataFrame containing buffered transport features.
+        feature_types (list of str): List of transport feature types to count (e.g., ['bus_stop', 'railway_station']).
+        year_column (str): The column indicating the year in the transport features DataFrame.
+        utla_column (str): The column indicating the UTLA code in the polygons DataFrame.
+
+    Returns:
+        GeoDataFrame: Updated `mode_of_transport_gdf` with added columns for transport counts in 2011 and 2021 for each feature.
+    """
+    result_gdf = mode_of_transport_gdf.copy()
+
+    for feature_type in feature_types:
+        for year in [2011, 2021]:
+            # Filter transport features by year and feature type
+            filtered_features = buffered_transport_gdf[
+                (buffered_transport_gdf[year_column] == year) &
+                (buffered_transport_gdf['feature'] == feature_type)
+            ]
+
+            # Perform spatial join to count intersecting features
+            joined = gpd.sjoin(result_gdf, filtered_features, how="left", predicate="intersects")
+
+
+            name = f"{feature_type}_count_{year}"
+
+
+            feature_counts = joined.groupby(utla_column).size().reset_index(name=name)
+
+            # Merge the counts back into the original DataFrame
+            result_gdf = result_gdf.merge(feature_counts, on=utla_column, how="left")
+            result_gdf[name] = result_gdf[name] / result_gdf.geometry.area * 1e6
+
+
+        result_gdf[f"{feature_type}_count_change"] = (result_gdf[f"{feature_type}_count_2021"] -  result_gdf[f"{feature_type}_count_2011"]) #/  result_gdf[f"{feature_type}_count_2011"]
+
+
+    result_gdf.fillna(0, inplace=True)
+
+    return result_gdf

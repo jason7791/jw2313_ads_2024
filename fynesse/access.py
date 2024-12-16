@@ -211,6 +211,125 @@ def upload_dataframe_in_chunks(df, table_name, username, password, host, port, d
         print(f"Uploaded rows {start} to {start + len(chunk)} to {table_name}.")
 
 
+def parse_df(df, year, feature):
+    cols_needed = ['date', 'geography', 'geography_code', feature]
+    if('geographyCode' in df.columns):
+        df.rename(columns={'geographyCode': 'geography_code'}, inplace= True)
+    if('GeographyCode' in df.columns):
+        df.rename(columns={'GeographyCode': 'geography_code'}, inplace= True)
+    if('geography code' in df.columns):
+        df.rename(columns={'geography code': 'geography_code'}, inplace = True)
+    if('geography' not in df.columns):
+        df['geography'] = df['geography_code']
+    df['date'] = year
+    df = df[cols_needed]
+    return df
+
+
+def stack_matching_rows(df_a, df_b, column_name='geography_code'):
+    """
+    Stacks rows of DataFrame B below DataFrame A,
+    but only includes rows of B where the values in the specified column
+    appear in DataFrame A.
+
+    Parameters:
+        df_a (pd.DataFrame): The first DataFrame.
+        df_b (pd.DataFrame): The second DataFrame.
+        column_name (str): The column name to match.
+
+    Returns:
+        pd.DataFrame: A new DataFrame with the stacked rows.
+    """
+    # Filter rows in df_b where column_name matches values in df_a[column_name]
+    matching_rows = df_b[df_b[column_name].isin(df_a[column_name])]
+
+    # Concatenate the two DataFrames
+    stacked_df = pd.concat([df_a, matching_rows], ignore_index=True)
+
+    return stacked_df
+
+def download_csv_to_dataframe(url):
+    """
+    Downloads a CSV file from the given URL and loads it into a Pandas DataFrame.
+
+    Parameters:
+        url (str): The URL to download the CSV file from.
+
+    Returns:
+        pd.DataFrame: The loaded DataFrame.
+    """
+    try:
+        # Send a GET request to the URL
+        response = requests.get(url)
+
+        # Check if the request was successful
+        response.raise_for_status()
+
+        # Load the content into a Pandas DataFrame
+        from io import StringIO
+        csv_data = StringIO(response.text)  # Convert bytes to a string-like object
+        df = pd.read_csv(csv_data)
+
+        print("CSV file successfully downloaded and loaded into a DataFrame.")
+        return df
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to download file: {e}")
+        return None
+    
+def calculate_yearly_metrics(df, value_column, id_column="geography_code", date_column="date", year1=2011, year2=2021):
+    """
+    Calculates metrics for a given value column, such as values for specific years and percentage change.
+
+    Args:
+        df (pd.DataFrame): The input dataframe.
+        value_column (str): The column name containing the values to analyze.
+        id_column (str): The column name used to identify regions (default is "geography_code").
+        date_column (str): The column name containing the year/date information.
+        year1 (int): The first year (e.g., 2011).
+        year2 (int): The second year (e.g., 2021).
+
+    Returns:
+        pd.DataFrame: Dataframe with additional columns for year1, year2 values and percentage change.
+    """
+    # Extract values for each year
+    df[f"{value_column}_{year1}"] = df[value_column].where(df[date_column] == year1)
+    df[f"{value_column}_{year2}"] = df[value_column].where(df[date_column] == year2)
+
+    # Fill missing values by grouping by the region (id_column)
+    df[f"{value_column}_{year1}"] = df.groupby(id_column)[f"{value_column}_{year1}"].transform('first')
+    df[f"{value_column}_{year2}"] = df.groupby(id_column)[f"{value_column}_{year2}"].transform('first')
+
+    # Calculate percentage change
+    df[f"{value_column}_change"] = (
+        (df[f"{value_column}_{year2}"] - df[f"{value_column}_{year1}"])
+        /df[f"{value_column}_{year1}"]
+    )
+
+    # Keep only unique rows for each region
+    return df[[id_column, f"{value_column}_{year1}", f"{value_column}_{year2}", f"{value_column}_change"]].drop_duplicates()
+
+def calculate_car_to_public_transport_ratio(dataframe, car_columns, public_transport_columns, column_name='car_usage'):
+    """
+    Calculate the proportion of car users to public transport users in a given dataset.
+
+    Parameters:
+        dataframe (pd.DataFrame): The input DataFrame with mode of transport data.
+        year (int): The year of the data for labeling or parsing purposes.
+        car_columns (list): List of column names related to car usage.
+        public_transport_columns (list): List of column names related to public transport usage.
+        column_name (str): The name of the resulting ratio column. Default is 'car_usage'.
+
+    Returns:
+        pd.DataFrame: Updated DataFrame with a new column for the car-to-public-transport ratio.
+    """
+    # Step 1: Calculate totals for car users and public transport users
+    dataframe['Car Users'] = dataframe[car_columns].sum(axis=1)
+    dataframe['Public Transport Users'] = dataframe[public_transport_columns].sum(axis=1)
+
+    # Step 2: Calculate the car-to-public-transport ratio
+    dataframe[column_name] = dataframe['Car Users'] / (dataframe['Public Transport Users'] + dataframe['Car Users'])
+
+    return dataframe
 
 def data():
     """Read the data from the web or local file, returning structured format such as a data frame"""

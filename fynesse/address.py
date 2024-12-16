@@ -242,9 +242,10 @@ def kfold_ridge_validation_with_plot(data, train_features, target_feature, n_spl
     return np.mean(train_r2_scores), np.mean(test_r2_scores), np.mean(test_rmse_scores)
 
 
+
 def create_polygon(lat, long, crs_epsg=27700, buffer=500):
     """
-    Create a 1 km x 1 km polygon centered at (lat, long).
+    Create a 500 m x 500m polygon centered at (lat, long).
 
     Args:
         lat (float): Latitude of the center.
@@ -264,53 +265,57 @@ def create_polygon(lat, long, crs_epsg=27700, buffer=500):
     # Extract x and y coordinates
     x, y = point.geometry.x[0], point.geometry.y[0]
 
-    # Create a 1km x 1km bounding box
+    # Create a bounding box
     polygon = box(x - buffer / 2, y - buffer / 2, x + buffer / 2, y + buffer / 2)
 
     # Convert to GeoDataFrame
     ns_sec_gdf = gpd.GeoDataFrame({'geometry': [polygon]}, crs=f"EPSG:{crs_epsg}")
-    ns_sec_gdf['OA21CD'] = ['temp']  # Temporary ID column required for the function
+    ns_sec_gdf['OA21CD'] = ['temp'] 
 
     return ns_sec_gdf
 
 def predict_census(lat, long, model, osm_gdf, features_to_keep, feature_buffer_distances, crs_epsg=27700):
     """
-    Predict ns_sec_l15 for a given latitude and longitude.
+    Predict metric for a given latitude and longitude.
 
     Args:
         lat (float): Latitude of the center of the polygon.
         long (float): Longitude of the center of the polygon.
         model (sm.OLS): Trained OLS model.
-        student_osm_gdf (GeoDataFrame): GeoDataFrame containing features.
+        osm_gdf (GeoDataFrame): GeoDataFrame containing features.
         features_to_keep (list): List of feature columns to use for prediction.
         crs_epsg (int): EPSG code for the CRS (default is EPSG:27700).
 
     Returns:
         float: Predicted ns_sec_l15 value.
     """
-    # Step 1: Create a 1 km x 1 km polygon around the coordinates
+    # Create a polygon around the coordinates
     census_gdf = create_polygon(lat, long, crs_epsg, buffer= 500)
 
-    # Step 2: Count features within the polygon using the provided function
+    # Count features within the polygon using the provided function
     result = assess.count_features_within_polygons(census_gdf, osm_gdf, features_to_keep, feature_buffer_distances,crs_epsg=crs_epsg)
 
 
-    # Step 3: Ensure all `features_to_keep` are present
+    # Ensure all `features_to_keep` are present
     for feature in features_to_keep:
         if feature not in result.columns:
             result[feature] = 0  # Add missing feature with value 0
 
-    # Step 3: Extract the features and prepare for prediction
+    # Extract the features and prepare for prediction
     feature_vector = result[features_to_keep].iloc[0].fillna(0).values.reshape(1, -1)
+    scaler = StandardScaler()
+    X_normalized = scaler.fit_transform(feature_vector)
 
     # Add constant for OLS model
-    feature_df = pd.DataFrame(feature_vector, columns=features_to_keep)
+    feature_df = pd.DataFrame(X_normalized, columns=features_to_keep)
     feature_df = sm.add_constant(feature_df, has_constant="add")
 
-    # Step 4: Predict using the trained model
+    # Predict using the trained model
     predicted_value = model.predict(feature_df).values[0]
 
     return predicted_value
+
+
 
 
 
